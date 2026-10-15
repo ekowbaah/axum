@@ -31,6 +31,17 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    let app = app();
+
+    // run it
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+        .await
+        .unwrap();
+    println!("listening on {}", listener.local_addr().unwrap());
+    axum::serve(listener, app).await;
+}
+
+fn app() -> Router {
     let middleware = ServiceBuilder::new()
         .set_x_request_id(MakeRequestUuid)
         .layer(
@@ -48,14 +59,45 @@ async fn main() {
         .propagate_x_request_id();
 
     // build our application with a route
-    let app = Router::new().route("/", get(handler)).layer(middleware);
+    Router::new().route("/", get(handler)).layer(middleware)
+}
 
-    // run it
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
-        .await
-        .unwrap();
-    println!("listening on {}", listener.local_addr().unwrap());
-    axum::serve(listener, app).await;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{header::HeaderName, Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn generates_and_propagates_a_request_id() {
+        let response = app()
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let id = response
+            .headers()
+            .get(HeaderName::from_static("x-request-id"))
+            .unwrap();
+        assert!(!id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn preserves_an_incoming_request_id() {
+        let response = app()
+            .oneshot(
+                Request::get("/")
+                    .header("x-request-id", "edge-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.headers()["x-request-id"], "edge-123");
+    }
 }
 
 async fn handler() -> Html<&'static str> {
